@@ -1,0 +1,58 @@
+import { index, generatedAt } from "@/lib/corpus";
+
+const MCP_URL = "https://mcp.bakingsteel.com/mcp";
+
+const EXAMPLES = [
+  "My dough tore when I stretched it. What did I do wrong?",
+  "Walk me through the 72-hour dough, starting tonight.",
+  "My oven only reaches 500°F. Which steel should I get?",
+  "What can I make on a griddle for breakfast?",
+];
+
+export default function Home() {
+  const recipes = index.all("recipe").length;
+  const products = index.all("product").length;
+  const rebuilt = new Date(generatedAt).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return (
+    <main>
+      <h1>Baking Steel, in your AI assistant.</h1>
+      <p className="lede">
+        Every recipe and technique Andris Lagsdin has published, connected
+        directly to Claude. Ask about dough, heat, or what to buy — answers come
+        from his own writing, with links back to the source.
+      </p>
+
+      <section>
+        <h2>Connect</h2>
+        <code className="url">{MCP_URL}</code>
+        <ol style={{ marginTop: 28 }}>
+          <li>Open Claude, then Settings → Connectors.</li>
+          <li>Choose Add custom connector and paste the address above.</li>
+          <li>Start a new chat and ask anything about baking.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Try asking</h2>
+        <ul>
+          {EXAMPLES.map((example) => (
+            <li key={example}>{example}</li>
+          ))}
+        </ul>
+      </section>
+
+      <footer>
+        <p>
+          {recipes} recipes and {products} products, updated {rebuilt}. Free to
+          use. Nothing is purchased on your behalf — checkout always happens on{" "}
+          <a href="https://bakingsteel.com">bakingsteel.com</a>.
+        </p>
+      </footer>
+    </main>
+  );
+}
