@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "eval:search": "tsx scripts/eval-search.ts"
+    "eval:search": "tsx scripts/eval-search.ts",
+    "ingest:youtube": "tsx scripts/ingest-youtube.ts",
+    "ingest": "npm run ingest:shopify && npm run ingest:youtube"
   },
   "keywords": [],
   "author": "",

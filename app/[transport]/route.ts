@@ -8,6 +8,7 @@ import {
   withRef,
   STORE_URL,
 } from "@/lib/corpus";
+import { INSTRUCTIONS, VOICE } from "@/lib/voice";
 
 const text = (body: string) => ({
   content: [{ type: "text" as const, text: body }],
@@ -164,6 +165,20 @@ const handler = createMcpHandler((server) => {
     },
   );
 
+  // Fallback for clients that do not surface server instructions to the model.
+  server.registerResource(
+    "voice",
+    "bakingsteel://voice",
+    {
+      title: "How Andris teaches",
+      description: "Verbatim examples of Andris Lagsdin's phrasing and cadence.",
+      mimeType: "text/plain",
+    },
+    async (uri) => ({
+      contents: [{ uri: uri.href, text: VOICE }],
+    }),
+  );
+
   server.registerResource(
     "corpus-info",
     "bakingsteel://corpus",
@@ -191,10 +206,10 @@ const handler = createMcpHandler((server) => {
   // Shown to users in the connector list, so name it for the brand rather
   // than leaving the adapter's default.
   serverInfo: { name: "baking-steel", version: "0.1.0" },
-  instructions:
-    "Baking Steel's published recipe and technique archive, plus the live " +
-    "product catalog. Ground answers in what these tools return and link back " +
-    "to the source so cooks can read Andris's full write-up.",
+  // Instructions reach the client's context once, on connect. That makes this
+  // the cheapest place to carry the voice — no per-response token cost, and no
+  // repeating a style block on every tool result.
+  instructions: INSTRUCTIONS,
 });
 
 export { handler as GET, handler as POST, handler as DELETE };

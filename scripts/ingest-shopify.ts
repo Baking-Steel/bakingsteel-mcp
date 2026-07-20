@@ -36,6 +36,32 @@ async function writeCached(slug: string, doc: Doc): Promise<void> {
   await writeFile(join(CACHE_DIR, `${slug}.json`), JSON.stringify(doc));
 }
 
+/**
+ * Articles already in the committed corpus are seeded into the cache so a
+ * resumed crawl refetches only what is genuinely missing. Without this, every
+ * run would re-request the whole archive and invite another throttle.
+ */
+async function seedCacheFromCorpus(): Promise<void> {
+  let docs: Doc[];
+  try {
+    const raw = await readFile(join(process.cwd(), "data", "corpus.json"), "utf8");
+    docs = (JSON.parse(raw) as { docs: Doc[] }).docs;
+  } catch {
+    return;
+  }
+
+  let seeded = 0;
+  for (const doc of docs) {
+    if (!doc.id.startsWith("blog:")) continue;
+    const slug = doc.id.slice("blog:".length);
+    if (await readCached(slug)) continue;
+    await writeCached(slug, doc);
+    seeded++;
+  }
+
+  if (seeded) console.log(`  seeded ${seeded} articles into cache from corpus`);
+}
+
 const STORE = "https://bakingsteel.com";
 const UA = { "user-agent": "bakingsteel-mcp/0.1" };
 
@@ -54,8 +80,16 @@ async function loadEnv(): Promise<void> {
   }
 }
 
-/** The storefront returns 429 well before 8 workers; 3 sustains cleanly. */
-const CONCURRENCY = 3;
+/**
+ * Serial, with a pause between requests.
+ *
+ * Eight workers got this IP throttled for roughly an hour, and three was still
+ * enough to trip it. The archive is only a few hundred pages and this runs at
+ * most weekly, so there is nothing to gain by going faster than a person
+ * browsing the site.
+ */
+const CONCURRENCY = 1;
+const REQUEST_DELAY_MS = 2000;
 const MAX_RETRIES = 4;
 
 /**
@@ -305,6 +339,7 @@ async function ingestArticles(): Promise<Doc[]> {
   console.log(`  found ${urls.length} article urls in sitemap`);
 
   await mkdir(CACHE_DIR, { recursive: true });
+  await seedCacheFromCorpus();
 
   let done = 0;
   let fromCache = 0;
@@ -320,7 +355,11 @@ async function ingestArticles(): Promise<Doc[]> {
         return cached;
       }
 
-      const article = extractArticle(await fetchText(url));
+      const html = await fetchText(url);
+      // Space out live requests; cache hits above skip this entirely.
+      await sleep(REQUEST_DELAY_MS);
+
+      const article = extractArticle(html);
       if (!article?.articleBody) {
         failures.push({ url, reason: "no Article schema" });
         return null;
@@ -365,9 +404,35 @@ async function ingestArticles(): Promise<Doc[]> {
 
 // -------------------------------------------------------------------- main
 
+/**
+ * Re-pull the storefront favicon so our page keeps matching the brand.
+ * Pinning a copy rather than hotlinking their CDN means a changed URL can never
+ * break our page; refreshing it here means a changed logo still reaches us.
+ */
+async function refreshFavicon(): Promise<void> {
+  try {
+    const home = await fetchText(STORE);
+    const href = home.match(
+      /<link[^>]*rel="[^"]*icon[^"]*"[^>]*href="([^"]+)"/i,
+    )?.[1];
+    if (!href) return;
+
+    const url = href.startsWith("//") ? `https:${href}` : href;
+    const res = await fetch(url, { headers: UA });
+    if (!res.ok) return;
+
+    const bytes = Buffer.from(await res.arrayBuffer());
+    await writeFile(join(process.cwd(), "app", "icon.png"), bytes);
+    console.log(`  favicon      ${(bytes.length / 1024).toFixed(1)} KB`);
+  } catch {
+    // A missing favicon is not worth failing an ingest over.
+  }
+}
+
 async function main() {
   await loadEnv();
   console.log("Ingesting Baking Steel...\n");
+  await refreshFavicon();
 
   const products = await ingestProducts();
   console.log(`  products      ${products.length}\n`);
