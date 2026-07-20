@@ -51,7 +51,13 @@ Two source quirks worth knowing:
 
 ## Deploy
 
-Push to Vercel. The connector address is the deployment origin plus `/mcp`.
+Live at https://bakingsteel-mcp.vercel.app — connector address
+`https://bakingsteel-mcp.vercel.app/mcp`.
+
+Pushing to `main` deploys. There are no environment variables to set; the server
+holds no runtime secrets. To move to a branded address, point a CNAME at the
+Vercel deployment and set `NEXT_PUBLIC_MCP_URL` so the landing page advertises
+it.
 
 ## Attribution
 

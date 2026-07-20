@@ -1,6 +1,11 @@
 import { index, generatedAt } from "@/lib/corpus";
 
-const MCP_URL = "https://mcp.bakingsteel.com/mcp";
+/**
+ * Set NEXT_PUBLIC_MCP_URL in Vercel once a branded domain is pointed here.
+ * Until then the deployment origin is the real connector address.
+ */
+const MCP_URL =
+  process.env.NEXT_PUBLIC_MCP_URL ?? "https://bakingsteel-mcp.vercel.app/mcp";
 
 const EXAMPLES = [
   "My dough tore when I stretched it. What did I do wrong?",
