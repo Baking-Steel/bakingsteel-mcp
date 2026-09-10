@@ -1,17 +1,16 @@
 /**
  * Corpus loader for the MCP runtime.
  *
- * Curates public Baking Steel content — no API keys, no database:
- * - Recipes/articles/videos come from the committed seed in data/corpus.json
- * - Products overlay live from bakingsteel.com/products.json (public)
+ * - Recipes/articles: weekly public scrape → Vercel Blob file, else seed JSON
+ * - Products: live from public products.json
  *
- * Refresh the seed anytime with `npm run ingest:shopify` (public scrape / optional
- * local Admin token) and commit — that is curation, not an integration.
+ * No Shopify Admin app. Blob is only storage for scraped public pages.
  */
 
 import seedData from "@/data/corpus.json";
 import type { Corpus, Doc } from "./types";
 import { SearchIndex } from "./search";
+import { readCorpusFromBlob } from "./blob-corpus";
 import { fetchProducts, STORE } from "./ingest/shopify";
 
 export const STORE_URL = STORE;
@@ -19,6 +18,7 @@ export const STORE_URL = STORE;
 /** Attribution so revenue from the assistant is measurable in Shopify. */
 export const REF = "utm_source=claude&utm_medium=mcp";
 
+const CORPUS_TTL_MS = 5 * 60 * 1000;
 const PRODUCTS_TTL_MS = 5 * 60 * 1000;
 
 const seed = seedData as unknown as Corpus;
@@ -28,10 +28,12 @@ interface Cached<T> {
   fetchedAt: number;
 }
 
+let baseCache: Cached<{ corpus: Corpus; source: "blob" | "seed" }> | null = null;
 let productsCache: Cached<Doc[]> | null = null;
 let indexCache: Cached<{
   index: SearchIndex;
   generatedAt: string;
+  source: "blob" | "seed";
   productsLive: boolean;
 }> | null = null;
 
@@ -39,6 +41,19 @@ function fresh<T>(cache: Cached<T> | null, ttl: number): T | null {
   if (!cache) return null;
   if (Date.now() - cache.fetchedAt > ttl) return null;
   return cache.value;
+}
+
+async function loadBaseCorpus(): Promise<{ corpus: Corpus; source: "blob" | "seed" }> {
+  const hit = fresh(baseCache, CORPUS_TTL_MS);
+  if (hit) return hit;
+
+  const fromBlob = await readCorpusFromBlob();
+  const value = fromBlob?.docs?.length
+    ? { corpus: fromBlob, source: "blob" as const }
+    : { corpus: seed, source: "seed" as const };
+
+  baseCache = { value, fetchedAt: Date.now() };
+  return value;
 }
 
 async function loadLiveProducts(): Promise<Doc[] | null> {
@@ -69,18 +84,21 @@ function mergeProducts(base: Corpus, products: Doc[] | null): Corpus {
 export async function getCorpusState(): Promise<{
   index: SearchIndex;
   generatedAt: string;
+  source: "blob" | "seed";
   productsLive: boolean;
 }> {
-  const hit = fresh(indexCache, PRODUCTS_TTL_MS);
+  const hit = fresh(indexCache, Math.min(CORPUS_TTL_MS, PRODUCTS_TTL_MS));
   if (hit) return hit;
 
+  const { corpus: base, source } = await loadBaseCorpus();
   const products = await loadLiveProducts();
-  const merged = mergeProducts(seed, products);
+  const merged = mergeProducts(base, products);
   const index = new SearchIndex(merged.docs);
 
   const value = {
     index,
-    generatedAt: seed.generatedAt,
+    generatedAt: base.generatedAt,
+    source,
     productsLive: Boolean(products?.length),
   };
 
@@ -88,11 +106,22 @@ export async function getCorpusState(): Promise<{
   return value;
 }
 
+export function invalidateCorpusCache(): void {
+  baseCache = null;
+  productsCache = null;
+  indexCache = null;
+}
+
+/** Docs to merge into on cron (Blob if present, else committed seed). */
+export async function getPriorDocsForRefresh(): Promise<Doc[]> {
+  const { corpus } = await loadBaseCorpus();
+  return corpus.docs;
+}
+
 export function withRef(url: string): string {
   return url.includes("?") ? `${url}&${REF}` : `${url}?${REF}`;
 }
 
-/** Compact result line. Full text comes from get_recipe, so keep this tight. */
 export function formatHit(doc: Doc): string {
   const lines = [doc.title, doc.summary, withRef(doc.url), `id: ${doc.id}`];
   return lines.filter(Boolean).join("\n");

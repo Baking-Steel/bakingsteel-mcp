@@ -1,26 +1,22 @@
 # Baking Steel MCP
 
-A free, public MCP server that scopes an AI assistant to Baking Steel's public
-recipes, technique writing, and catalog — curation over content that is already
-on the open web. No Shopify app install, no database, no runtime secrets.
+A free, public MCP that scopes an AI assistant to Baking Steel's public
+recipes, technique writing, and catalog. No Shopify Admin app — only public
+pages, plus optional Vercel Blob to hold the weekly scrape.
 
 **Repo:** https://github.com/Baking-Steel/bakingsteel-mcp  
 **Connector:** `https://bakingsteel-mcp.vercel.app/mcp`
 
 ## Design
 
-One Next.js app on Vercel.
-
-- **Recipes and posts** live in a committed seed (`data/corpus.json`) built from
-  public storefront pages. Updating the archive is curation: run ingest, review,
-  commit, push.
-- **Products are live.** `find_products` reads the public
-  `https://bakingsteel.com/products.json` (no API key) with a short in-memory
-  cache so prices and availability stay current.
-- **No integrations to maintain.** The MCP does not call Admin APIs or store
-  credentials. Anyone can fork and deploy with zero env vars.
-- **No embeddings.** BM25 over a few hundred documents is enough; the client
-  model reformulates when results miss.
+- **Products are live** from `https://bakingsteel.com/products.json` (no key).
+- **Recipes/posts** come from a curated seed (`data/corpus.json`), refreshed by a
+  **weekly public scrape** that writes `corpus.json` to Vercel Blob. Blob is a
+  file for scraped HTML/JSON — not a database and not a Shopify integration.
+- **Cron stays under Vercel's ~5 minute limit** by scraping at most ~90 pages per
+  run (2 concurrent, polite gaps, 4-minute budget). New sitemap URLs go first;
+  the rest rotates weekly so the full archive revalidates over a few weeks.
+- **No embeddings.** BM25 over a few hundred docs is enough.
 
 ## Tools
 
@@ -32,29 +28,34 @@ One Next.js app on Vercel.
 | `find_products` | Catalog with live prices, variants, availability |
 | `create_cart` | Build a pre-filled cart link |
 
-`create_cart` returns a URL. It never places an order or handles payment —
-checkout always happens on bakingsteel.com.
+## Vercel (optional freshness)
 
-## Deploy
+Without these, the MCP still works from the committed seed + live products.
 
-Pushing to `main` deploys. No environment variables are required.
+| Variable | Purpose |
+| --- | --- |
+| `BLOB_READ_WRITE_TOKEN` | Save/load the weekly scrape JSON (create a Blob store on the project) |
+| `CRON_SECRET` | Bearer token for `/api/cron/refresh` |
 
-Optional: `NEXT_PUBLIC_MCP_URL` if you point a branded domain at the deployment.
+Cron: Mondays 06:00 UTC → `GET /api/cron/refresh`  
+(`vercel.json`: `0 6 * * 1`, `maxDuration` 300s, scrape self-stops ~240s)
 
-## Refreshing the curated archive (optional, local)
+Manual trigger:
 
 ```bash
-npm run ingest:shopify
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://bakingsteel-mcp.vercel.app/api/cron/refresh
 ```
 
-That pulls public product JSON and public blog pages into `data/corpus.json`.
-Commit the result when you want the seed updated. An optional local
-`SHOPIFY_ADMIN_TOKEN` in `.env` only speeds up article ingest for maintainers —
-it is never used by the deployed MCP.
+## Local seed update
 
-YouTube transcripts: `npm run ingest:youtube` (yt-dlp), then commit.
+```bash
+npm run ingest:shopify   # public pages; optional local Admin token only speeds this up
+```
+
+Commit `data/corpus.json` when you want the git seed updated. YouTube:
+`npm run ingest:youtube`.
 
 ## Attribution
 
-Every outbound link carries `utm_source=claude&utm_medium=mcp`, so revenue
-influenced by the assistant is measurable in Shopify Analytics.
+Outbound links use `utm_source=claude&utm_medium=mcp`.
