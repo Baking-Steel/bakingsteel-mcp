@@ -3,20 +3,24 @@
 A free, public MCP server that gives Claude and other AI assistants Baking
 Steel's full recipe archive and live product catalog.
 
+**Repo:** https://github.com/Baking-Steel/bakingsteel-mcp  
+**Connector:** `https://bakingsteel-mcp.vercel.app/mcp`
+
 ## Design
 
-The whole system is one Next.js app on Vercel and one committed JSON file.
+One Next.js app on Vercel. No database.
 
-- **No database.** The corpus is ~300 documents, roughly half a megabyte. It is
-  imported directly into the route bundle, so a cold start needs no filesystem,
-  no network, and no connection pool.
-- **No runtime secrets.** Credentials are used at ingest time only. The deployed
-  server reads none, which is why it can be public and unauthenticated.
-- **No embeddings.** BM25 over 300 documents scans in well under a millisecond.
-  The MCP client is itself a capable model that reformulates and re-queries when
-  results miss, which covers most of what a vector store would buy here.
-
-Updating content is `npm run ingest` followed by `git push`.
+- **Products are live.** `find_products` reads
+  `https://bakingsteel.com/products.json` (public, no API key) with a short
+  in-memory cache. Prices and availability stay current without a deploy.
+- **Recipes and posts refresh on a schedule.** A Vercel Cron job (every 6 hours)
+  pulls the archive via the Shopify Admin API and writes `corpus.json` to
+  Vercel Blob. The MCP serves that Blob, falling back to the committed seed in
+  `data/corpus.json` if Blob is empty.
+- **No secrets in GitHub.** Admin / Blob / cron credentials live only in the
+  Vercel project environment. The public repo is safe to fork.
+- **No embeddings.** BM25 over a few hundred documents is enough; the client
+  model reformulates when results miss.
 
 ## Tools
 
@@ -31,33 +35,41 @@ Updating content is `npm run ingest` followed by `git push`.
 `create_cart` returns a URL. It never places an order or handles payment —
 checkout always happens on bakingsteel.com.
 
-## Ingest
+## Vercel setup (production freshness)
 
-    cp .env.example .env
-    npm run ingest:shopify
+Set these on the `bakingsteel-mcp` Vercel project only — never commit them:
 
-Without `SHOPIFY_ADMIN_TOKEN` the ingest falls back to reading 298 storefront
-pages, which the store aggressively rate-limits; expect it to take a while.
-Results are cached under `.cache/articles`, so a throttled run resumes rather
-than restarting. With an Admin token the same content arrives in a few
-paginated API calls.
+| Variable | Purpose |
+| --- | --- |
+| `SHOPIFY_ADMIN_TOKEN` | Cron refreshes recipes/articles via Admin GraphQL |
+| `BLOB_READ_WRITE_TOKEN` | Read/write the refreshed corpus on Vercel Blob |
+| `CRON_SECRET` | Bearer token required by `/api/cron/refresh` |
 
-Two source quirks worth knowing:
+Also create a Blob store for the project (Vercel dashboard → Storage → Blob).
 
-- The per-blog Atom feeds ignore `?page=` and always return the newest 30
-  entries, so they cannot enumerate the archive.
-- Article bodies live in `<script type="application/json">`, not the
-  `application/ld+json` block you would expect.
+Vercel Cron calls `GET /api/cron/refresh` every 6 hours with
+`Authorization: Bearer $CRON_SECRET`. You can trigger the same URL manually
+after rotating tokens.
 
-## Deploy
+Until the first successful cron run, the MCP serves the seed corpus in
+`data/corpus.json` and still overlays live products.
 
-Live at https://bakingsteel-mcp.vercel.app — connector address
-`https://bakingsteel-mcp.vercel.app/mcp`.
+Optional: `NEXT_PUBLIC_MCP_URL` if you point a branded domain at the deployment.
 
-Pushing to `main` deploys. There are no environment variables to set; the server
-holds no runtime secrets. To move to a branded address, point a CNAME at the
-Vercel deployment and set `NEXT_PUBLIC_MCP_URL` so the landing page advertises
-it.
+## Local ingest (optional)
+
+For offline work or updating the seed file:
+
+```bash
+cp .env.example .env   # add SHOPIFY_ADMIN_TOKEN locally; never commit .env
+npm run ingest:shopify
+```
+
+Without `SHOPIFY_ADMIN_TOKEN` the CLI falls back to scraping storefront pages,
+which the store rate-limits. Production cron never uses that path.
+
+YouTube transcripts remain a separate CLI step (`npm run ingest:youtube`);
+cron preserves existing video docs when it refreshes Shopify content.
 
 ## Attribution
 

@@ -1,13 +1,9 @@
 /**
- * Pulls the Baking Steel catalog and every blog article into data/corpus.json.
+ * CLI ingest: writes data/corpus.json for local/dev and as the seed fallback.
  *
- * Reads public Shopify endpoints only, so this runs without credentials:
- *   - products.json for the catalog
- *   - sitemap_blogs_1.xml for the full article list
- *   - each article's embedded schema.org Article block for clean body text
- *
- * The Atom feeds look like the obvious source but silently cap at the newest
- * 30 entries per blog regardless of ?page=, so they are not used here.
+ * Prefer SHOPIFY_ADMIN_TOKEN (local .env only). Without it, falls back to
+ * storefront HTML scraping — slow and rate-limited; production cron never
+ * uses that path.
  *
  *   npm run ingest:shopify
  */
@@ -15,14 +11,36 @@
 import { XMLParser } from "fast-xml-parser";
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Doc, ProductVariant } from "../lib/types";
-import { htmlToText, summarize } from "./html";
+import type { Doc } from "../lib/types";
+import { summarize } from "../lib/html";
+import {
+  STORE,
+  UA,
+  fetchText,
+  fetchProducts,
+  fetchArticlesViaAdmin,
+} from "../lib/ingest/shopify";
 
-/**
- * Article extraction is cached to disk so a throttled run resumes instead of
- * refetching from zero. Delete .cache/articles to force a full rebuild.
- */
 const CACHE_DIR = join(process.cwd(), ".cache", "articles");
+const CONCURRENCY = 1;
+const REQUEST_DELAY_MS = 2000;
+
+const parser = new XMLParser({ ignoreAttributes: false });
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function loadEnv(): Promise<void> {
+  try {
+    const raw = await readFile(join(process.cwd(), ".env"), "utf8");
+    for (const line of raw.split("\n")) {
+      const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
+      if (!match) continue;
+      const value = match[2].trim().replace(/^["']|["']$/g, "");
+      if (value && !process.env[match[1]]) process.env[match[1]] = value;
+    }
+  } catch {
+    // No .env — public products still work; articles need Admin or scrape.
+  }
+}
 
 async function readCached(slug: string): Promise<Doc | null> {
   try {
@@ -36,11 +54,6 @@ async function writeCached(slug: string, doc: Doc): Promise<void> {
   await writeFile(join(CACHE_DIR, `${slug}.json`), JSON.stringify(doc));
 }
 
-/**
- * Articles already in the committed corpus are seeded into the cache so a
- * resumed crawl refetches only what is genuinely missing. Without this, every
- * run would re-request the whole archive and invite another throttle.
- */
 async function seedCacheFromCorpus(): Promise<void> {
   let docs: Doc[];
   try {
@@ -62,72 +75,6 @@ async function seedCacheFromCorpus(): Promise<void> {
   if (seeded) console.log(`  seeded ${seeded} articles into cache from corpus`);
 }
 
-const STORE = "https://bakingsteel.com";
-const UA = { "user-agent": "bakingsteel-mcp/0.1" };
-
-/** Node 20 has no --env-file-if-exists, and .env is optional here. */
-async function loadEnv(): Promise<void> {
-  try {
-    const raw = await readFile(join(process.cwd(), ".env"), "utf8");
-    for (const line of raw.split("\n")) {
-      const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
-      if (!match) continue;
-      const value = match[2].trim().replace(/^["']|["']$/g, "");
-      if (value && !process.env[match[1]]) process.env[match[1]] = value;
-    }
-  } catch {
-    // No .env — the fallback path needs no credentials.
-  }
-}
-
-/**
- * Serial, with a pause between requests.
- *
- * Eight workers got this IP throttled for roughly an hour, and three was still
- * enough to trip it. The archive is only a few hundred pages and this runs at
- * most weekly, so there is nothing to gain by going faster than a person
- * browsing the site.
- */
-const CONCURRENCY = 1;
-const REQUEST_DELAY_MS = 2000;
-const MAX_RETRIES = 4;
-
-/**
- * Shopify's Retry-After can be minutes long. Honouring it verbatim parks a
- * worker for the whole window, so cap it and let the retry budget run out.
- */
-const MAX_BACKOFF_MS = 10_000;
-
-const parser = new XMLParser({ ignoreAttributes: false });
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function fetchText(url: string): Promise<string> {
-  let lastStatus = 0;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const res = await fetch(url, { headers: UA });
-    if (res.ok) return res.text();
-
-    lastStatus = res.status;
-    // Throttling and transient upstream errors are worth waiting out.
-    if (res.status !== 429 && res.status < 500) break;
-
-    const retryAfter = Number(res.headers.get("retry-after"));
-    const backoff = Number.isFinite(retryAfter) && retryAfter > 0
-      ? retryAfter * 1000
-      : 500 * 2 ** attempt;
-    await sleep(Math.min(backoff, MAX_BACKOFF_MS));
-  }
-
-  throw new Error(`GET ${url} -> ${lastStatus}`);
-}
-
-async function fetchJson<T>(url: string): Promise<T> {
-  return JSON.parse(await fetchText(url)) as T;
-}
-
-/** Runs tasks with a fixed worker pool, preserving input order. */
 async function pool<T, R>(
   items: T[],
   limit: number,
@@ -147,61 +94,6 @@ async function pool<T, R>(
   return results;
 }
 
-// ---------------------------------------------------------------- products
-
-interface ShopifyProduct {
-  id: number;
-  title: string;
-  handle: string;
-  body_html: string;
-  product_type: string;
-  tags: string[] | string;
-  published_at: string;
-  variants: { id: number; title: string; price: string; available: boolean }[];
-  images: { src: string }[];
-}
-
-async function ingestProducts(): Promise<Doc[]> {
-  const { products } = await fetchJson<{ products: ShopifyProduct[] }>(
-    `${STORE}/products.json?limit=250`,
-  );
-
-  return products.map((p) => {
-    const variants: ProductVariant[] = p.variants.map((v) => ({
-      id: v.id,
-      title: v.title,
-      price: Number(v.price),
-      available: v.available,
-    }));
-    const prices = variants.map((v) => v.price);
-    const body = htmlToText(p.body_html);
-
-    return {
-      id: `product:${p.handle}`,
-      kind: "product",
-      title: p.title,
-      url: `${STORE}/products/${p.handle}`,
-      summary: summarize(body),
-      body,
-      tags: Array.isArray(p.tags)
-        ? p.tags
-        : String(p.tags || "").split(",").map((t) => t.trim()).filter(Boolean),
-      publishedAt: p.published_at,
-      product: {
-        handle: p.handle,
-        productType: p.product_type,
-        priceMin: prices.length ? Math.min(...prices) : 0,
-        priceMax: prices.length ? Math.max(...prices) : 0,
-        available: variants.some((v) => v.available),
-        variants,
-        imageUrl: p.images?.[0]?.src,
-      },
-    } satisfies Doc;
-  });
-}
-
-// ---------------------------------------------------------------- articles
-
 async function articleUrls(): Promise<string[]> {
   const xml = await fetchText(`${STORE}/sitemap_blogs_1.xml`);
   const parsed = parser.parse(xml);
@@ -210,7 +102,6 @@ async function articleUrls(): Promise<string[]> {
 
   return list
     .map((u: { loc?: string }) => String(u?.loc ?? ""))
-    // Keep article pages (/blogs/{blog}/{slug}), drop blog index pages.
     .filter((loc: string) => /\/blogs\/[^/]+\/[^/]+$/.test(loc));
 }
 
@@ -222,11 +113,6 @@ interface SchemaArticle {
   description?: string;
 }
 
-/**
- * The storefront emits its Article schema in <script type="application/json">
- * rather than ld+json, so match both. articleBody arrives as plain text with
- * newlines already in place.
- */
 function extractArticle(html: string): SchemaArticle | null {
   const blocks = html.matchAll(
     /<script[^>]*type=["'](?:application\/ld\+json|application\/json)["'][^>]*>([\s\S]*?)<\/script>/gi,
@@ -250,91 +136,8 @@ function extractArticle(html: string): SchemaArticle | null {
   return null;
 }
 
-/**
- * Preferred path. The storefront rate-limits by IP well before the archive is
- * fully walked, so with a token we read articles straight from the Admin API
- * instead — a handful of paginated calls, and it carries real tags.
- */
-async function ingestArticlesViaAdmin(token: string): Promise<Doc[]> {
-  const endpoint = `${STORE}/admin/api/2025-01/graphql.json`;
-  const query = `
-    query Articles($cursor: String) {
-      articles(first: 100, after: $cursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          handle
-          title
-          body
-          summary
-          publishedAt
-          tags
-          blog { handle }
-        }
-      }
-    }
-  `;
-
-  interface ArticleNode {
-    handle: string;
-    title?: string;
-    body?: string;
-    summary?: string;
-    publishedAt?: string;
-    tags?: string[];
-    blog?: { handle?: string };
-  }
-
-  interface ArticlesResponse {
-    data?: { articles: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: ArticleNode[] } };
-    errors?: unknown;
-  }
-
-  const docs: Doc[] = [];
-  let cursor: string | null = null;
-
-  do {
-    const res: Response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-shopify-access-token": token,
-      },
-      body: JSON.stringify({ query, variables: { cursor } }),
-    });
-
-    if (!res.ok) throw new Error(`Admin API -> ${res.status} ${await res.text()}`);
-
-    const payload = (await res.json()) as ArticlesResponse;
-    if (payload.errors || !payload.data) {
-      throw new Error(`Admin API: ${JSON.stringify(payload.errors)}`);
-    }
-
-    const page = payload.data.articles;
-    for (const node of page.nodes) {
-      const body = htmlToText(node.body ?? "");
-      if (!body) continue;
-
-      const blogHandle = node.blog?.handle ?? "recipes";
-      docs.push({
-        id: `blog:${node.handle}`,
-        kind: blogHandle === "recipes" ? "recipe" : "article",
-        title: node.title?.trim() ?? "",
-        url: `${STORE}/blogs/${blogHandle}/${node.handle}`,
-        summary: node.summary?.trim() || summarize(body),
-        body,
-        tags: [blogHandle, ...(node.tags ?? [])],
-        publishedAt: node.publishedAt ?? undefined,
-      });
-    }
-
-    cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
-    console.log(`  ...${docs.length} articles`);
-  } while (cursor);
-
-  return docs.filter((d) => d.title && d.body);
-}
-
-async function ingestArticles(): Promise<Doc[]> {
+/** Storefront scrape — CLI fallback only when Admin token is missing. */
+async function ingestArticlesFromStorefront(): Promise<Doc[]> {
   const urls = await articleUrls();
   console.log(`  found ${urls.length} article urls in sitemap`);
 
@@ -356,7 +159,6 @@ async function ingestArticles(): Promise<Doc[]> {
       }
 
       const html = await fetchText(url);
-      // Space out live requests; cache hits above skip this entirely.
       await sleep(REQUEST_DELAY_MS);
 
       const article = extractArticle(html);
@@ -369,7 +171,6 @@ async function ingestArticles(): Promise<Doc[]> {
 
       const doc = {
         id: `blog:${slug}`,
-        // The recipes blog is the bulk; steel-info is care and technique.
         kind: blogHandle === "recipes" ? "recipe" : "article",
         title: (article.headline ?? "").trim(),
         url,
@@ -402,13 +203,6 @@ async function ingestArticles(): Promise<Doc[]> {
   return docs.filter((d): d is Doc => d !== null && Boolean(d.title) && Boolean(d.body));
 }
 
-// -------------------------------------------------------------------- main
-
-/**
- * Re-pull the storefront favicon so our page keeps matching the brand.
- * Pinning a copy rather than hotlinking their CDN means a changed URL can never
- * break our page; refreshing it here means a changed logo still reaches us.
- */
 async function refreshFavicon(): Promise<void> {
   try {
     const home = await fetchText(STORE);
@@ -425,7 +219,7 @@ async function refreshFavicon(): Promise<void> {
     await writeFile(join(process.cwd(), "app", "icon.png"), bytes);
     console.log(`  favicon      ${(bytes.length / 1024).toFixed(1)} KB`);
   } catch {
-    // A missing favicon is not worth failing an ingest over.
+    // Non-fatal.
   }
 }
 
@@ -434,7 +228,7 @@ async function main() {
   console.log("Ingesting Baking Steel...\n");
   await refreshFavicon();
 
-  const products = await ingestProducts();
+  const products = await fetchProducts();
   console.log(`  products      ${products.length}\n`);
 
   const token = process.env.SHOPIFY_ADMIN_TOKEN;
@@ -444,8 +238,8 @@ async function main() {
   }
 
   const articles = token
-    ? await ingestArticlesViaAdmin(token)
-    : await ingestArticles();
+    ? await fetchArticlesViaAdmin(token)
+    : await ingestArticlesFromStorefront();
   const recipes = articles.filter((d) => d.kind === "recipe").length;
   console.log(`\n  recipes       ${recipes}`);
   console.log(`  articles      ${articles.length - recipes}`);
@@ -453,8 +247,6 @@ async function main() {
   const out = join(process.cwd(), "data");
   const corpusPath = join(out, "corpus.json");
 
-  // Merge over whatever is already committed. A partial run — the fallback path
-  // gets throttled routinely — must never delete documents we already have.
   const existing = new Map<string, Doc>();
   try {
     const prior = JSON.parse(await readFile(corpusPath, "utf8")) as { docs: Doc[] };

@@ -1,6 +1,7 @@
 /**
- * The corpus is a single JSON file committed to the repo. At this scale
- * (~800 docs, ~1MB) it loads into memory on cold start and needs no database.
+ * Corpus documents. Production prefers a cron-refreshed copy on Vercel Blob;
+ * data/corpus.json is the committed seed / offline fallback. Products are
+ * overlaid live from the public storefront JSON API.
  */
 
 export type DocKind = "recipe" | "article" | "video" | "product";

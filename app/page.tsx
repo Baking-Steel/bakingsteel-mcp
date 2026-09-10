@@ -1,4 +1,7 @@
-import { index, generatedAt } from "@/lib/corpus";
+import { getCorpusState } from "@/lib/corpus";
+
+/** Always reflect Blob / live products — do not bake seed counts at build time. */
+export const dynamic = "force-dynamic";
 
 /**
  * Set NEXT_PUBLIC_MCP_URL in Vercel once a branded domain is pointed here.
@@ -14,7 +17,8 @@ const EXAMPLES = [
   "What can I make on a griddle for breakfast?",
 ];
 
-export default function Home() {
+export default async function Home() {
+  const { index, generatedAt, source, productsLive } = await getCorpusState();
   const recipes = index.all("recipe").length;
   const products = index.all("product").length;
   const rebuilt = new Date(generatedAt).toLocaleDateString("en-US", {
@@ -53,7 +57,9 @@ export default function Home() {
 
       <footer>
         <p>
-          {recipes} recipes and {products} products, updated {rebuilt}. Free to
+          {recipes} recipes and {products} products. Archive rebuilt {rebuilt}
+          {" "}({source}
+          {productsLive ? "; products live from the storefront" : ""}). Free to
           use. Nothing is purchased on your behalf — checkout always happens on{" "}
           <a href="https://bakingsteel.com">bakingsteel.com</a>.
         </p>

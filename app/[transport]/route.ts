@@ -1,8 +1,7 @@
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 import {
-  index,
-  generatedAt,
+  getCorpusState,
   formatHit,
   formatProduct,
   withRef,
@@ -36,6 +35,7 @@ const handler = createMcpHandler((server) => {
       },
     },
     async ({ query, limit }) => {
+      const { index } = await getCorpusState();
       const hits = index.search(query, {
         kinds: ["recipe", "article", "video"],
         limit: limit ?? 8,
@@ -59,6 +59,7 @@ const handler = createMcpHandler((server) => {
       },
     },
     async ({ id }) => {
+      const { index } = await getCorpusState();
       const doc = index.get(id);
       if (!doc) {
         return text(`No document with id '${id}'. Use search_recipes to find valid ids.`);
@@ -84,6 +85,7 @@ const handler = createMcpHandler((server) => {
       },
     },
     async ({ problem }) => {
+      const { index } = await getCorpusState();
       const hits = index.search(problem, {
         kinds: ["recipe", "article", "video"],
         limit: 5,
@@ -91,8 +93,6 @@ const handler = createMcpHandler((server) => {
 
       if (hits.length === 0) return text(NO_RESULTS);
 
-      // Troubleshooting needs the actual passage, not a summary — send enough
-      // body text to reason from, trimmed so several sources fit in one call.
       const passages = hits.map((h) => {
         const excerpt = h.doc.body.slice(0, 1200);
         const clipped = excerpt.length < h.doc.body.length ? `${excerpt}…` : excerpt;
@@ -109,15 +109,16 @@ const handler = createMcpHandler((server) => {
       title: "Find products",
       description:
         "Search the Baking Steel catalog — steels, griddles, peels, dough mixes, and " +
-        "accessories — with live prices, variants, and availability. Use it to answer " +
-        "what to buy for a given oven, dish, or budget, and to get the variantId " +
-        "needed by create_cart. Omit the query to list the full catalog.",
+        "accessories — with live prices, variants, and availability from the storefront. " +
+        "Use it to answer what to buy for a given oven, dish, or budget, and to get the " +
+        "variantId needed by create_cart. Omit the query to list the full catalog.",
       inputSchema: {
         query: z.string().optional()
           .describe("What the cook needs, for example 'steel for Neapolitan' or 'peel'."),
       },
     },
     async ({ query }) => {
+      const { index } = await getCorpusState();
       const docs = query
         ? index.search(query, { kinds: ["product"], limit: 6 }).map((h) => h.doc)
         : index.all("product");
@@ -165,7 +166,6 @@ const handler = createMcpHandler((server) => {
     },
   );
 
-  // Fallback for clients that do not surface server instructions to the model.
   server.registerResource(
     "voice",
     "bakingsteel://voice",
@@ -184,33 +184,31 @@ const handler = createMcpHandler((server) => {
     "bakingsteel://corpus",
     {
       title: "Corpus freshness",
-      description: "What this server indexes and when it was last rebuilt.",
+      description: "What this server indexes and when content was last refreshed.",
       mimeType: "text/plain",
     },
-    async (uri) => ({
-      contents: [
-        {
-          uri: uri.href,
-          text: [
-            `Baking Steel archive, rebuilt ${generatedAt}.`,
-            `${index.all("recipe").length} recipes`,
-            `${index.all("article").length} technique articles`,
-            `${index.all("video").length} videos`,
-            `${index.all("product").length} products`,
-          ].join("\n"),
-        },
-      ],
-    }),
+    async (uri) => {
+      const { index, generatedAt, source, productsLive } = await getCorpusState();
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            text: [
+              `Baking Steel archive, recipes/articles rebuilt ${generatedAt} (${source}).`,
+              `Products: ${productsLive ? "live from bakingsteel.com/products.json" : "from corpus snapshot"}.`,
+              `${index.all("recipe").length} recipes`,
+              `${index.all("article").length} technique articles`,
+              `${index.all("video").length} videos`,
+              `${index.all("product").length} products`,
+            ].join("\n"),
+          },
+        ],
+      };
+    },
   );
 }, {
-  // Shown to users in the connector list, so name it for the brand rather
-  // than leaving the adapter's default.
-  serverInfo: { name: "baking-steel", version: "0.1.0" },
-  // Instructions reach the client's context once, on connect. That makes this
-  // the cheapest place to carry the voice — no per-response token cost, and no
-  // repeating a style block on every tool result.
+  serverInfo: { name: "baking-steel", version: "0.2.0" },
   instructions: INSTRUCTIONS,
 });
 
 export { handler as GET, handler as POST, handler as DELETE };
-
