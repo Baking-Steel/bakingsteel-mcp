@@ -1,9 +1,9 @@
 /**
- * Shopify fetchers shared by the CLI ingest and the Vercel cron refresh.
+ * Public Shopify storefront fetchers (+ optional Admin path for local ingest).
  *
- * Products use the public storefront JSON API — no credentials.
- * Articles prefer the Admin GraphQL API when SHOPIFY_ADMIN_TOKEN is set
- * (Vercel env only; never commit the token).
+ * Products always use the public storefront JSON API — no credentials.
+ * Admin GraphQL is only for faster local `npm run ingest:shopify`; the deployed
+ * MCP never calls it.
  */
 
 import type { Doc, ProductVariant } from "../types";

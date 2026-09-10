@@ -18,7 +18,7 @@ const EXAMPLES = [
 ];
 
 export default async function Home() {
-  const { index, generatedAt, source, productsLive } = await getCorpusState();
+  const { index, generatedAt, productsLive } = await getCorpusState();
   const recipes = index.all("recipe").length;
   const products = index.all("product").length;
   const rebuilt = new Date(generatedAt).toLocaleDateString("en-US", {
@@ -57,10 +57,11 @@ export default async function Home() {
 
       <footer>
         <p>
-          {recipes} recipes and {products} products. Archive rebuilt {rebuilt}
-          {" "}({source}
-          {productsLive ? "; products live from the storefront" : ""}). Free to
-          use. Nothing is purchased on your behalf — checkout always happens on{" "}
+          {recipes} recipes and {products} products. Curated archive from{" "}
+          {rebuilt}
+          {productsLive ? "; catalog prices live from the storefront" : ""}.
+          Free to use. Nothing is purchased on your behalf — checkout always
+          happens on{" "}
           <a href="https://bakingsteel.com">bakingsteel.com</a>.
         </p>
       </footer>

@@ -188,13 +188,13 @@ const handler = createMcpHandler((server) => {
       mimeType: "text/plain",
     },
     async (uri) => {
-      const { index, generatedAt, source, productsLive } = await getCorpusState();
+      const { index, generatedAt, productsLive } = await getCorpusState();
       return {
         contents: [
           {
             uri: uri.href,
             text: [
-              `Baking Steel archive, recipes/articles rebuilt ${generatedAt} (${source}).`,
+              `Baking Steel curated archive (seed rebuilt ${generatedAt}).`,
               `Products: ${productsLive ? "live from bakingsteel.com/products.json" : "from corpus snapshot"}.`,
               `${index.all("recipe").length} recipes`,
               `${index.all("article").length} technique articles`,
@@ -207,7 +207,7 @@ const handler = createMcpHandler((server) => {
     },
   );
 }, {
-  serverInfo: { name: "baking-steel", version: "0.2.0" },
+  serverInfo: { name: "baking-steel", version: "0.3.0" },
   instructions: INSTRUCTIONS,
 });
 

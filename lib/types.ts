@@ -1,7 +1,6 @@
 /**
- * Corpus documents. Production prefers a cron-refreshed copy on Vercel Blob;
- * data/corpus.json is the committed seed / offline fallback. Products are
- * overlaid live from the public storefront JSON API.
+ * Corpus documents. data/corpus.json is the curated seed for recipes/articles/
+ * videos. Products are overlaid live from the public storefront JSON API.
  */
 
 export type DocKind = "recipe" | "article" | "video" | "product";
